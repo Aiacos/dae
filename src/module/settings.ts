@@ -167,6 +167,13 @@ export const registerSettings = async function () {
     config: false,
   });
 
+  game.settings.register("dae", "damageRulesMigrated", {
+    scope: "world",
+    default: false,
+    type: Boolean,
+    config: false,
+  });
+
 };
 
 async function showMigrationDialog() {

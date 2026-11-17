@@ -3,7 +3,7 @@ import { duringPreparation } from "../lib/effectSource.js";
 import { AnyObject } from "fvtt-types/utils";
 import { daeSpecialDurations, debug, debugEnabled, error, i18n, i18nFormat, warn } from "../../dae.js";
 import { addAutoFields } from "../apps/DAEActiveEffectConfig.js";
-import { BaseValuesInner, actionQueue, actorFromUuid, daeApplyActiveEffects, daeApplyChange, daeShouldApplyChange, daeMacro, daeInitMacroActors, effectIsTransfer, enumerateBaseValues, getSelfTarget, getStaticID, libWrapper, localizationMap, midiActive, noDupDamageMacro, pendingInitMacroEffects, processEffectChanges, usesLegacyApplication } from "../dae.js";
+import { BaseValuesInner, actionQueue, actorFromUuid, classIdentifierRef, daeApplyActiveEffects, daeApplyChange, daeShouldApplyChange, daeMacro, daeInitMacroActors, effectIsTransfer, enumerateBaseValues, getSelfTarget, getStaticID, libWrapper, localizationMap, midiActive, noDupDamageMacro, pendingInitMacroEffects, processEffectChanges, usesLegacyApplication } from "../dae.js";
 import { DAESystem, ValidSpec, wildcardEffects } from "./DAESystem.js";
 import { grantOnRolledPlacement } from "../lib/currentHp.js";
 import { getEffectItemData, getEffectSource } from "../lib/effectSource.js";
@@ -1445,7 +1445,7 @@ function getReplacementData(this: ActiveEffect.Implementation, wrapped, baseData
   const scalingValue: number = this.flags.dnd5e?.scaling ?? application.scaling ?? 0;
   const item = itemData
     // @ts-expect-error no dnd5e-types
-    ? { ...itemData.system, flags: itemData.flags, name: itemData.name, level: spellLevel ?? itemData.system?.level }
+    ? { ...itemData.system, ...classIdentifierRef(itemData), flags: itemData.flags, name: itemData.name, level: spellLevel ?? itemData.system?.level }
     : undefined;
   // @ts-expect-error no dnd5e-types
   const scaling = new dnd5e.documents.Scaling(scalingValue);

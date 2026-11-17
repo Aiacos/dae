@@ -21,6 +21,54 @@ const fieldMappings: Record<string, string | { key: string; value?: string; type
   "system.traits.dv.all": { key: "system.traits.dv.value", value: "ALL", type: "add" },
 };
 
+/** DAE's attacker trait keys and the dnd5e 6.1 change types that replace them */
+const IGNORE_TRAIT_RULES: Record<string, string> = {
+  "system.traits.idi.value": "dnd5e.damage.ignore.immunity",
+  "system.traits.idr.value": "dnd5e.damage.ignore.resistance",
+  "system.traits.idv.value": "dnd5e.damage.ignore.vulnerability",
+};
+
+/**
+ * dnd5e 6.1 has rules for ignoring a target's immunity, resistance or vulnerability: each `idi`/`idr`/`idv` change
+ * becomes one rule change per damage type (`ALL` kept). A removal (`-fire`) can't be a rule and is left, with a warning.
+ * Returns the same array when nothing changed.
+ */
+/** Whether this dnd5e has the damage rule change types (6.1) */
+export function hasDamageRuleTypes(): boolean {
+  const changeTypes = (ActiveEffect as unknown as ActiveEffectStatic).CHANGE_TYPES ?? {};
+  return Object.values(IGNORE_TRAIT_RULES).every(type => type in changeTypes);
+}
+
+// Each kept change is reported once a session: the conversion also runs whenever an effect's sheet opens
+const reportedKept = new Set<string>();
+function reportKept(effectName: string | undefined, change: { key: string, value: unknown }, why: string) {
+  const id = `${effectName}|${change.key}|${change.value}`;
+  if (reportedKept.has(id)) return;
+  reportedKept.add(id);
+  console.warn(`dae | migration | "${effectName}" keeps ${change.key}${change.value ? ` = "${change.value}"` : ""}: ${why}`);
+}
+
+export function ignoreTraitsToDamageRules<T extends { key: string, value: unknown, type?: string, _id?: string }>(changes: T[], effectName?: string): T[] {
+  const changeTypes = (ActiveEffect as unknown as ActiveEffectStatic).CHANGE_TYPES ?? {};
+  let changed = false;
+  const result = changes.flatMap(change => {
+    const ruleType = IGNORE_TRAIT_RULES[change.key];
+    if (!ruleType || !(ruleType in changeTypes)) return [change];
+    const values = String(change.value ?? "").split(",").map(v => v.trim()).filter(v => v);
+    if (!values.length) {
+      reportKept(effectName, change, "it has no value to make a dnd5e damage rule from.");
+      return [change];
+    }
+    if (values.some(v => v.startsWith("-"))) {
+      reportKept(effectName, change, "a removal can't be a dnd5e damage rule.");
+      return [change];
+    }
+    changed = true;
+    return values.map((value, i) => ({ ...change, key: "damage", type: ruleType, value, ...(i > 0 && change._id ? { _id: foundry.utils.randomID() } : {}) }));
+  });
+  return changed ? result : changes;
+}
+
 /**
  * Compute a migration delta for a single effect's data object.
  * Returns null if no migration is needed.
@@ -62,7 +110,7 @@ export function migrateEffectData(
   // 3. Change key migrations
   const changes: any[] = effectData.system?.changes ?? effectData.changes ?? [];
   let changesModified = false;
-  const newChanges = changes.map((c: any) => {
+  let newChanges = changes.map((c: any) => {
     const change = foundry.utils.deepClone(c);
     let modified = false;
 
@@ -82,6 +130,14 @@ export function migrateEffectData(
     if (modified) changesModified = true;
     return change;
   });
+
+  {
+    const rules = ignoreTraitsToDamageRules(newChanges, effectData.name);
+    if (rules !== newChanges) {
+      newChanges = rules;
+      changesModified = true;
+    }
+  }
 
   // ATL → token.* rewriting. Done after the existing transformations so it operates on the
   // already-normalised key list (e.g. won't double-rewrite if an earlier mapping changed the key).
@@ -377,6 +433,8 @@ export async function migrateWorld(): Promise<MigrationResult> {
 
   // Update migration version
   await game.settings.set(MODULE_ID, "migrationVersion", game.modules.get(MODULE_ID)!.version);
+  // The idi/idr/idv conversion needs dnd5e 6.1: a world migrated on 6.0 runs again when it gets there
+  if (hasDamageRuleTypes()) await game.settings.set(MODULE_ID, "damageRulesMigrated", true);
 
   progress?.remove();
 
@@ -402,5 +460,6 @@ export function shouldAutoMigrate(): boolean {
   const lastVersion = game.settings.get(MODULE_ID, "migrationVersion") as string;
   const currentVersion = game.modules.get(MODULE_ID)!.version;
   if (!lastVersion) return true;
+  if (hasDamageRuleTypes() && !game.settings.get(MODULE_ID, "damageRulesMigrated")) return true;
   return foundry.utils.isNewerVersion(currentVersion, lastVersion);
 }

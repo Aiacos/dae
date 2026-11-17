@@ -173,6 +173,7 @@ declare module "fvtt-types/configuration" {
     "dae.coreExpiryAction": string;
     "dae.enableAutoMigration": boolean;
     "dae.migrationVersion": string;
+    "dae.damageRulesMigrated": boolean;
 
     // Other module settings
     "ATL.presets": {
@@ -205,6 +206,11 @@ declare global {
   interface ActiveEffectStatic {
     CHANGE_TYPES: Record<string, { label: string; defaultPriority?: number }>;
     CHANGE_PHASES: Record<string, { label?: string; hint?: string }>;
+  }
+
+  interface ActiveEffect<out SubType extends ActiveEffect.SubType = ActiveEffect.SubType> {
+    /** dnd5e 6.1: the data a rule change's conditions are checked against (the roll data and the effect's item) */
+    getRuleConditionData?(rollData: Record<string, unknown>): Record<string, unknown>;
   }
 
   // v14's foundry.applications.ux.Autocomplete, not yet in fvtt-types. Reach it with
@@ -240,6 +246,7 @@ declare global {
       }>;
       armorProficiencies: Record<string, string>;
       attackClassifications: Record<string, {label: string}>;
+      attackModes?: Record<string, {label: string}>;
       attackTypes: Record<string, {label: string}>;
       attunementTypes: Record<string, string>;
       characterFlags: Record<string, {
@@ -260,6 +267,9 @@ declare global {
       // This one's added by midi
       customDamageResistanceTypes: Record<string, string>;
       damageScalingModes: Record<string, {label: string}>;
+      defaultAbilities?: Record<string, string>;
+      // dnd5e 6.1: resistances matched by a filter (falling)
+      damageResistanceTypes?: Record<string, { label: string }>;
       damageTypes: Record<string, {
         label: string;
         isPhysical: boolean;

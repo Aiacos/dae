@@ -631,12 +631,22 @@ export async function addConvenientEffectsChange(effectName: string, uuid: strin
   return await myAddCEEffectWith(effectData, uuid, origin, false, isToken);
 }
 
+/**
+ * A change value as text. Foundry 14 stores a value that reads as JSON parsed (`"0"` as 0, `"true"` as true,
+ * `"[1]"` as an array) when an effect is loaded with its item or actor.
+ */
+export function changeValueText(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (value === undefined || value === null) return "";
+  return typeof value === "object" ? JSON.stringify(value) : String(value);
+}
+
 export async function addConditionChange(actor: Actor.Implementation, change: ActiveEffect.ChangeData, token: foundry.canvas.placeables.Token.Implementation | undefined, effect: ActiveEffect.Implementation): Promise<ActiveEffect.Implementation[] | undefined> {
   // This is from macro.statusEffect
   const condition = getStatusEffectsArray().find(se => se.id === change.value);
   if (!condition) return;
   const overlay = foundry.utils.getProperty(effect, "flags.core.overlay") as boolean;
-  if (change.value.startsWith("Convenient Effect")) {
+  if (changeValueText(change.value).startsWith("Convenient Effect")) {
     console.warn("Convenient Effect change detected in macro.StatusEffect which is deprecated use macro.CE instead");
     console.warn(`Actor: ${actor.name} Change: ${change.value} Token: ${token?.name} Effect: ${effect.name} ${effect.uuid}`);
     const effectName = change.value.split("Convenient Effect: ")[1];
@@ -654,6 +664,7 @@ export async function addConditionChange(actor: Actor.Implementation, change: Ac
 }
 
 export async function removeConditionChange(actor: Actor.Implementation, change: ActiveEffect.ChangeData, token: foundry.canvas.placeables.Token.Implementation | null, effect: ActiveEffect.Implementation, context: any = {}) {
+  if (typeof change.value !== "string") return;
   if (change.value.startsWith("Convenient Effect")) {
     const effectName = change.value.split("Convenient Effect: ")[1];
     return await ceInterface?.removeEffect({ effectName, uuid: actor.uuid, origin: effect.uuid });
@@ -1127,7 +1138,7 @@ export function deleteActiveEffectHook(effect: ActiveEffect.Implementation, opti
 }
 
 export function getSelfTarget(actor: Actor.Implementation | null): Token | TokenDocument {
-  // An undrawn token (another level, a scene not viewed) has no placeable: its document then.
+  // No canvas token (another level, a scene not viewed): its document then.
   if (actor?.token) return actor.token.object ?? actor.token;
   const speaker = ChatMessage.getSpeaker({ actor });
   if (speaker.token) {
@@ -1205,7 +1216,8 @@ export async function daeMacro(action: string, actor: Actor.Implementation, effe
       if (!allMacroEffects.includes(change.key)) continue;
       context.stackCount = effectData.flags?.dae?.stacks ?? 1;
       let functionMatch;
-      if (typeof change.value === "string") change.value = change.value.trim();
+      // A macro's value is its arguments as text, whatever Foundry stored
+      change.value = changeValueText(change.value).trim();
       if (change.value.startsWith("function.")) {
         const paramRe = /function\.\w+(\.\w+)*\("[^"]*"(?:\s*,\s*"[^"]*")+?\)/;
         const paramMatch = change.value.match(paramRe);
@@ -1673,10 +1685,26 @@ function fillItemRefsWithoutCard(data: ActiveEffect.Source, item: Item.Implement
   if (foundry.utils.parseUuid(options.itemCardUuid ?? "")?.type === "ChatMessage") return;
   // @ts-expect-error no dnd5e-types
   const level = data.flags?.dnd5e?.spellLevel ?? item.system.level;
-  const refs = { item: { ...item.system, flags: item.flags, name: item.name, level }, itemLevel: level };
+  const refs = { item: { ...item.system, ...classIdentifierRef(item), flags: item.flags, name: item.name, level }, itemLevel: level };
   // @ts-expect-error v14 system.changes on toObject() data
   for (const change of data.system?.changes ?? []) {
     if (typeof change.value === "string" && /@item(Level)?\b/.test(change.value)) change.value = fillApplicationRefs(change.value, refs);
+  }
+}
+
+/**
+ * `@item.classIdentifier`, which dnd5e's roll data adds for spells (and features from dnd5e 6.1) from a getter, so
+ * spreading `item.system` misses it.
+ */
+export function classIdentifierRef(item: Item.Implementation | AnyObject): { classIdentifier?: string } {
+  if (!(item instanceof Item)) return {};
+  try {
+    // A lookup in the actor's items; throws while that actor is being prepared (identifiedItems not built yet).
+    // @ts-expect-error no dnd5e-types
+    const classIdentifier: unknown = item.system.classIdentifier;
+    return typeof classIdentifier === "string" ? { classIdentifier } : {};
+  } catch {
+    return {};
   }
 }
 
@@ -3144,7 +3172,7 @@ export async function processConditionalEffects(actor: Actor.Implementation, upd
       }
       // @ts-expect-error v14 system.changes on toObject() data
       ceData.system.changes = ceData.system.changes
-        .filter(change => change.key !== "StatusEffect" || change.value.startsWith("zce-"));
+        .filter(change => change.key !== "StatusEffect" || changeValueText(change.value).startsWith("zce-"));
 
       for (let status of ceData.statuses) {
         statusEffects.add(status);

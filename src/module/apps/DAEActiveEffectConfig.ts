@@ -11,6 +11,7 @@ const DEFAULT_PHASE = "initial";
 import { DAEFieldBrowser } from "./FieldBrowser.js";
 import { InputAutocomplete, checkChangeValue, referenceData, takesFormula, valueSuggestions } from "./ChangeAutocomplete.js";
 import { addConditionBuilderButtons } from "./ConditionBuilder.js";
+import { advantageRuleOptions, isRuleChangeType } from "./ruleConditions.js";
 import { cannotRollDice, wrapBareDice } from "../lib/diceValues.js";
 import { isMaxHpKey } from "../lib/currentHp.js";
 import { migrateEffectData } from "../migration.js";
@@ -577,19 +578,34 @@ export function geti18nTranslations() {
  */
 Hooks.on("renderEffectChangeConfig", async (app: foundry.applications.api.ApplicationV2, element: HTMLElement) => {
   const effect = foundry.utils.getProperty(app, "effect") as ActiveEffect.Implementation | undefined;
-  const keyInput = element.querySelector<HTMLInputElement>('input[name="key"]');
-  if (!effect || !keyInput) return;
-  addConditionBuilderButtons(element, effect);
+  if (!effect) return;
+  // A rule change's conditions are checked at each roll: the builder offers that roll's fields.
+  addConditionBuilderButtons(element, effect, () => {
+    const type = element.querySelector<HTMLSelectElement>('select[name="type"]')?.value;
+    const key = element.querySelector<HTMLInputElement | HTMLSelectElement>('[name="key"]')?.value;
+    return isRuleChangeType(type) && key ? { key, type } : undefined;
+  });
+  // dnd5e 6.1 draws the key of a change type with key options (its rule types) as a select
+  const keyInput = element.querySelector<HTMLInputElement | HTMLSelectElement>('input[name="key"], select[name="key"]');
+  if (!keyInput) return;
+
+  // dnd5e 6.1 re-renders the dialog when the change type changes: the parts are new, the form element is not.
+  changeConfigListeners.get(app)?.abort();
+  const listeners = new AbortController();
+  changeConfigListeners.set(app, listeners);
+  const { signal } = listeners;
 
   const { validFields, validSpecsToUse } = resolveValidFields(effect);
-  const browser = new DAEFieldBrowser(validFields, {
-    // dnd5e's dialog will not re-render once open, so the value controls follow the key themselves.
-    onFieldSelected: () => { keyInput.dispatchEvent(new Event("change", { bubbles: true })); },
-    updateFieldInfo: () => { }
-  });
-  await browser.init();
-  browser.setInput(keyInput);
-  keyInput.addEventListener("click", () => browser.updateBrowser());
+  if (keyInput instanceof HTMLInputElement) {
+    const browser = new DAEFieldBrowser(validFields, {
+      // The value controls follow the key themselves: the dialog re-renders only on a type change.
+      onFieldSelected: () => { keyInput.dispatchEvent(new Event("change", { bubbles: true })); },
+      updateFieldInfo: () => { }
+    });
+    await browser.init();
+    browser.setInput(keyInput);
+    keyInput.addEventListener("click", () => browser.updateBrowser());
+  }
 
   const change = foundry.utils.getProperty(app, "change") as DAEChangeData | undefined;
 
@@ -653,12 +669,14 @@ Hooks.on("renderEffectChangeConfig", async (app: foundry.applications.api.Applic
      * (token magic, convenient effects, statuses, vision modes) from its own state, and
      * the dialog is opened from that sheet, so reuse it; fall back to the system-level list.
      */
+    // From the change (or a mapped key), as opposed to what an earlier key or type left in the field
+    const fromChange = pendingValue !== undefined;
     const value = pendingValue ?? valueField.value;
     pendingValue = undefined;
     // A creature size changed by steps (Add/Subtract a number) takes a number, not a size.
     const stepping = key === "system.traits.size" && ["add", "subtract"].includes(typeSelect?.value ?? "");
     const options: Record<string, string> | undefined = stepping ? undefined :
-      (typeof sheet?.getOptionsForSpec === "function"
+      ruleValueOptions(typeSelect?.value) ?? (typeof sheet?.getOptionsForSpec === "function"
         ? sheet.getOptionsForSpec({ key } as ActiveEffect.ChangeData)
         : undefined)
       ?? daeSystemClass.getOptionsForSpec({ key } as ActiveEffect.ChangeData);
@@ -667,7 +685,11 @@ Hooks.on("renderEffectChangeConfig", async (app: foundry.applications.api.Applic
     if (options && Object.keys(options).length) {
       next = document.createElement("select");
       next.name = "value";
-      for (const [optionValue, label] of Object.entries(options)) {
+      // A stored value missing from the list (dnd5e's "+1") is kept rather than lost on save; a value left by the
+      // previous key or type is not.
+      const entries = Object.entries(options);
+      if (fromChange && value !== "" && !(value in options)) entries.push([value, value]);
+      for (const [optionValue, label] of entries) {
         const opt = document.createElement("option");
         opt.value = optionValue;
         opt.textContent = String(label);
@@ -707,7 +729,12 @@ Hooks.on("renderEffectChangeConfig", async (app: foundry.applications.api.Applic
 
     element.querySelector(".dae-key-note")?.remove();
     const mapped = mappedChange(key);
-    if (key === "system.attributes.hp.max") {
+    if (isRuleChangeType(typeSelect?.value)) {
+      const note = document.createElement("p");
+      note.classList.add("hint", "dae-key-note");
+      note.textContent = [key === "d20" ? i18n("dae.RuleKey.D20") : "", i18n("dae.RuleKey.Conditions")].filter(t => t).join(" ");
+      keyInput.closest(".form-group")?.append(note);
+    } else if (key === "system.attributes.hp.max") {
       const note = document.createElement("p");
       note.classList.add("hint", "dae-key-note");
       note.textContent = i18n("dae.HpMaxNote");
@@ -801,7 +828,7 @@ Hooks.on("renderEffectChangeConfig", async (app: foundry.applications.api.Applic
     if (wanted) ids.add(id);
     else ids.delete(id);
     effect.setFlag("dae", "raiseCurrentHp", [...ids]).catch(err => error("dae | saving raise current HP", err));
-  }, { capture: true });
+  }, { capture: true, signal });
 
   refreshForKey();
   checkDice();
@@ -812,8 +839,26 @@ Hooks.on("renderEffectChangeConfig", async (app: foundry.applications.api.Applic
     if ((event.target as HTMLElement | null)?.getAttribute("name") !== "value") return;
     checkDice();
     checkValue();
-  });
+  }, { signal });
 });
+
+const changeConfigListeners = new WeakMap<foundry.applications.api.ApplicationV2, AbortController>();
+
+/** Value lists for dnd5e 6.1's rule changes: advantage modes, and damage types for the damage application options. */
+function ruleValueOptions(changeType: string | undefined): Record<string, string> | undefined {
+  if (changeType === "dnd5e.advantage" && isRuleChangeType(changeType)) return advantageRuleOptions();
+  return damageRuleOptions(changeType);
+}
+
+/** dnd5e 6.1's damage application rules (ignore/downgrade) take one damage type, or ALL. */
+function damageRuleOptions(changeType: string | undefined): Record<string, string> | undefined {
+  if (!changeType?.startsWith("dnd5e.damage.") || !(changeType in ((ActiveEffect as unknown as ActiveEffectStatic).CHANGE_TYPES ?? {}))) return undefined;
+  const options: Record<string, string> = { ALL: i18n("DND5E.DAMAGE.All") };
+  for (const config of [CONFIG.DND5E.damageTypes, CONFIG.DND5E.damageResistanceTypes ?? {}]) {
+    for (const [type, { label }] of Object.entries(config)) options[type] = i18n(label);
+  }
+  return options;
+}
 
 /** A form group matching the markup the system's dialog already uses. */
 function daeFormGroup(label: string, field: HTMLElement, hint?: string): HTMLElement {

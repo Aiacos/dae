@@ -1,5 +1,6 @@
 import { i18n } from "../../dae.js";
 import { InputAutocomplete, pathSuggestions, referenceData } from "./ChangeAutocomplete.js";
+import { labels, ruleChoices, ruleFields, ruleHasItem, sampleRolls, SampleRoll } from "./ruleConditions.js";
 
 /*
  * A form-based editor for dnd5e 6 filter conditions (FiltersField): groups of comparisons that are stored
@@ -90,10 +91,6 @@ function commonFieldGroups(): [string, CommonField[]][] {
     ["attributes", fixed("attributes")], ["health", fixed("health")], ["defences", fixed("defences")],
     ["progress", fixed("progress")], ["item", fixed("item")],
   ];
-}
-
-function labels(config: Record<string, { label?: string; name?: string }>): Record<string, string> {
-  return Object.fromEntries(Object.entries(config).map(([id, entry]) => [id, i18n(entry.label ?? entry.name ?? id)]));
 }
 
 /** Paths whose values come from a dnd5e or core list, so the value is picked rather than typed. */
@@ -189,6 +186,10 @@ interface ConditionBuilderOptions {
   value: string;
   effect: ActiveEffect.Implementation;
   onSubmit: (value: string) => void;
+  /** A dnd5e rule change's key (attack, check, save, d20, damage, healing): its conditions are checked at each roll. */
+  ruleKey?: string;
+  /** That change's type: dnd5e's damage application rules see less of the roll. */
+  ruleType?: string;
 }
 
 export class DAEConditionBuilder extends foundry.applications.api.ApplicationV2 {
@@ -241,6 +242,10 @@ export class DAEConditionBuilder extends foundry.applications.api.ApplicationV2 
   #effect: ActiveEffect.Implementation;
   #onSubmit: (value: string) => void;
   #data: Record<string, unknown>;
+  #ruleKey: string | undefined;
+  #ruleType: string | undefined;
+  #samples: SampleRoll[] = [];
+  #sample: SampleRoll | undefined;
   #nodes = new WeakMap<HTMLElement, ConditionNode>();
   #parents = new WeakMap<ConditionNode, ConditionGroup>();
 
@@ -250,7 +255,27 @@ export class DAEConditionBuilder extends foundry.applications.api.ApplicationV2 
     this.#root = DAEConditionBuilder.parse(options.value);
     this.#effect = options.effect;
     this.#onSubmit = options.onSubmit;
-    this.#data = referenceData(options.effect);
+    this.#ruleKey = options.ruleKey;
+    this.#ruleType = options.ruleType;
+    if (this.#ruleKey) {
+      this.#samples = sampleRolls(options.effect, this.#ruleKey, this.#ruleType);
+      this.#sample = this.#samples[0];
+    }
+    this.#data = this.#sample?.data() ?? referenceData(options.effect);
+  }
+
+  /** The field menu's groups: for a rule, the roll's own fields first. */
+  #fieldGroups(): [string, CommonField[]][] {
+    const groups = commonFieldGroups();
+    if (!this.#ruleKey) return groups;
+    // The rolled item's data is in the roll data for attacks and damage, whatever the effect is on.
+    const item = ruleHasItem(this.#ruleKey);
+    const rest: [string, CommonField[]][] = groups.map(([id, fields]) => [id, item ? fields.map(f => ({ ...f, itemOnly: false })) : fields]);
+    return [["roll", ruleFields(this.#ruleKey, this.#ruleType)], ...rest];
+  }
+
+  #choices(key: string): Record<string, string> | undefined {
+    return (this.#ruleKey ? ruleChoices(this.#ruleKey)[key]?.() : undefined) ?? CHOICES[key]?.();
   }
 
   /** The actor the live result is tested against. */
@@ -267,8 +292,11 @@ export class DAEConditionBuilder extends foundry.applications.api.ApplicationV2 
 
     const hint = document.createElement("p");
     hint.classList.add("hint");
-    hint.textContent = i18n("dae.ConditionBuilder.Hint");
+    hint.textContent = this.#ruleKey
+      ? game.i18n?.format("dae.ConditionBuilder.RuleHint", { key: this.#ruleKey }) ?? ""
+      : i18n("dae.ConditionBuilder.Hint");
     content.append(hint);
+    if (this.#samples.length) content.append(this.#sampleSelect());
 
     if (this.#root) content.append(this.#buildGroup(this.#root, true));
     else {
@@ -379,6 +407,36 @@ export class DAEConditionBuilder extends foundry.applications.api.ApplicationV2 
     return element;
   }
 
+  /** The roll the live result is tested against, grouped by kind of roll. */
+  #sampleSelect(): HTMLElement {
+    const select = document.createElement("select");
+    select.dataset.field = "sample";
+    const groups = new Map<string, HTMLOptGroupElement>();
+    for (const sample of this.#samples) {
+      let optgroup = groups.get(sample.group);
+      if (!optgroup) {
+        optgroup = document.createElement("optgroup");
+        optgroup.label = sample.group;
+        groups.set(sample.group, optgroup);
+        select.append(optgroup);
+      }
+      const option = document.createElement("option");
+      option.value = sample.id;
+      option.textContent = sample.label;
+      optgroup.append(option);
+    }
+    select.value = this.#sample?.id ?? "";
+    const group = document.createElement("div");
+    group.classList.add("form-group", "dae-cb-sample");
+    const label = document.createElement("label");
+    label.textContent = i18n("dae.ConditionBuilder.TestWith");
+    const fields = document.createElement("div");
+    fields.classList.add("form-fields");
+    fields.append(select);
+    group.append(label, fields);
+    return group;
+  }
+
   #commonFieldsMenu(): HTMLSelectElement {
     const select = document.createElement("select");
     select.dataset.field = "field";
@@ -387,7 +445,7 @@ export class DAEConditionBuilder extends foundry.applications.api.ApplicationV2 
     placeholder.textContent = i18n("dae.ConditionBuilder.CommonFields");
     select.append(placeholder);
     const onItem = this.#effect.parent instanceof Item;
-    for (const [groupId, fields] of commonFieldGroups()) {
+    for (const [groupId, fields] of this.#fieldGroups()) {
       const entries = fields.filter(field => !field.itemOnly || onItem);
       if (!entries.length) continue;
       const optgroup = document.createElement("optgroup");
@@ -408,7 +466,7 @@ export class DAEConditionBuilder extends foundry.applications.api.ApplicationV2 
     if (condition.op === "empty") {
       return this.#select("value", [["true", i18n("Yes")], ["false", i18n("No")]], condition.value === false ? "false" : "true");
     }
-    const choices = CHOICES[condition.key]?.();
+    const choices = this.#choices(condition.key);
     if (choices && (PICK_ONE.has(condition.op) || LIST_OPS.has(condition.op))) {
       // A stored value missing from the list is kept as an extra choice rather than lost.
       const current = (Array.isArray(condition.value) ? condition.value : [condition.value])
@@ -436,6 +494,13 @@ export class DAEConditionBuilder extends foundry.applications.api.ApplicationV2 
     const MultiSelect = foundry.applications.elements.HTMLMultiSelectElement;
     if (!(target instanceof HTMLInputElement || target instanceof HTMLSelectElement || target instanceof MultiSelect)) return;
     const field = target.dataset.field;
+    if (field === "sample") {
+      if (event.type !== "change") return;
+      this.#sample = this.#samples.find(s => s.id === target.value) ?? this.#sample;
+      if (this.#sample) this.#data = this.#sample.data();
+      this.#refreshResult();
+      return;
+    }
     const holder = target.closest<HTMLElement>(".dae-cb-row, .dae-cb-group");
     const node = holder ? this.#nodes.get(holder) : undefined;
     if (!field || !node) return;
@@ -444,7 +509,7 @@ export class DAEConditionBuilder extends foundry.applications.api.ApplicationV2 
     if (node.type === "group") {
       if (field === "group-op" && isGroupOp(raw)) node.op = raw;
       else if (field === "field" && raw && event.type === "change") {
-        const common = commonFieldGroups().flatMap(([, fields]) => fields).find(f => f.key === raw);
+        const common = this.#fieldGroups().flatMap(([, fields]) => fields).find(f => f.key === raw);
         if (common) node.children.push(row(common.key, common.op, ""));
         this.render();
         return;
@@ -471,9 +536,9 @@ export class DAEConditionBuilder extends foundry.applications.api.ApplicationV2 
     const result = this.element?.querySelector<HTMLElement>(".dae-cb-result");
     if (!result) return;
     const actor = this.#actor;
-    if (!actor) {
+    if (!actor || (this.#ruleKey && !this.#sample)) {
       result.dataset.result = "none";
-      result.textContent = i18n("dae.ConditionBuilder.NoActor");
+      result.textContent = i18n(actor ? "dae.ConditionBuilder.NoRoll" : "dae.ConditionBuilder.NoActor");
       return;
     }
     const json = this.#root ? DAEConditionBuilder.serialize(this.#root) : this.#original;
@@ -482,8 +547,11 @@ export class DAEConditionBuilder extends foundry.applications.api.ApplicationV2 
       passes = new globalThis.dnd5e.Filter.Filter(JSON.parse(json)).check(this.#data);
     } catch { /* an invalid condition fails, as dnd5e treats it */ }
     result.dataset.result = passes ? "pass" : "fail";
-    result.textContent = game.i18n?.format(passes ? "dae.ConditionBuilder.Passes" : "dae.ConditionBuilder.Fails",
-      { actor: actor.name ?? "" }) ?? "";
+    result.textContent = (this.#sample
+      ? game.i18n?.format(passes ? "dae.ConditionBuilder.RollPasses" : "dae.ConditionBuilder.RollFails",
+        { roll: `${this.#sample.group}: ${this.#sample.label}`, actor: actor.name ?? "" })
+      : game.i18n?.format(passes ? "dae.ConditionBuilder.Passes" : "dae.ConditionBuilder.Fails",
+        { actor: actor.name ?? "" })) ?? "";
   }
 
   #groupFor(target: HTMLElement): ConditionGroup | undefined {
@@ -522,8 +590,11 @@ export class DAEConditionBuilder extends foundry.applications.api.ApplicationV2 
   }
 }
 
-/** Put a builder button after each of dnd5e's condition fields in `root` that lacks one. */
-export function addConditionBuilderButtons(root: HTMLElement, effect: ActiveEffect.Implementation): void {
+/**
+ * Put a builder button after each of dnd5e's condition fields in `root` that lacks one. `rule` gives the key and type
+ * of the rule change being edited, read when the builder opens (they can change meanwhile).
+ */
+export function addConditionBuilderButtons(root: HTMLElement, effect: ActiveEffect.Implementation, rule?: () => { key: string, type?: string } | undefined): void {
   for (const input of Array.from(root.querySelectorAll<HTMLElement>("filters-input"))) {
     if (input.nextElementSibling?.classList.contains("dae-condition-builder")) continue;
     if (!(input instanceof foundry.applications.elements.AbstractFormInputElement)) continue;
@@ -536,6 +607,8 @@ export function addConditionBuilderButtons(root: HTMLElement, effect: ActiveEffe
       new DAEConditionBuilder({
         value: String(input.value ?? "{}"),
         effect,
+        ruleKey: rule?.()?.key,
+        ruleType: rule?.()?.type,
         onSubmit: value => { input.value = value; }
       }).render({ force: true });
     });

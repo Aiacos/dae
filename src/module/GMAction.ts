@@ -360,6 +360,10 @@ export async function applyActiveEffects({
           // @ts-expect-error v14 duration.expiry not in fvtt-types yet
           if (effectDuration?.expiry) aeData.duration.expiry = effectDuration.expiry;
         }
+        // dnd5e marks an enchantment's rider effect with the enchantment's id, which it resolves on the rider's item:
+        // on a creature it resolves to nothing and the effect's preparation throws.
+        const riderOf = foundry.utils.getProperty(aeData, "flags.dnd5e.dependentOn");
+        if (typeof riderOf === "string" && riderOf.length <= 16) foundry.utils.setProperty(aeData, "flags.dnd5e.dependentOn", undefined);
         warn("Apply active effects ", aeData, itemCardUuid);
         let source = await fromUuid(aeData.origin);
         let context = targetActor.getRollData();
@@ -421,7 +425,7 @@ export async function applyActiveEffects({
             } else if (typeof change.value === "string") {
               change.value = Roll.replaceFormulaData(change.value, context, { missing: '0', warn: false });
               change.value = restoreDeferredRefs(change.value);
-            } else {
+            } else if (Array.isArray(change.value)) {
               change.value = foundry.utils.duplicate(change.value).map(f => {
                 if (f === "@itemCardUuid") return itemCardUuid;
                 if (f === "@target") return targetToken?.id;

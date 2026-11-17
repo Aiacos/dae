@@ -1,3 +1,14 @@
+### 14.6.10
+* Added: on dnd5e 6.1, the change dialog's condition builder and phase show for rule changes (advantage, bonus, damage rules), and the ignore/downgrade damage rules offer a list of damage types.
+* Added: on dnd5e 6.1, the condition builder of a rule change offers that roll's fields (roll type, ability, skill, tool, attack type, damage type, critical...) and tests the condition against a roll of the actor picked from a list; advantage rules pick their value (Advantage, Always advantage, Can't have disadvantage...).
+* Changed: on dnd5e 6.1, the migration turns the attacker trait keys `system.traits.idi.value`, `idr` and `idv` (ignore the target's immunity, resistance, vulnerability) into dnd5e's Ignore Immunity / Resistance / Vulnerability damage rules, one per damage type. A removal (`-fire`) is left as it is.
+* Changed: on dnd5e 6.1, that migration also runs for a world first migrated on dnd5e 6.0.
+* Fixed: on dnd5e 6.1, the condition builder offered fields dnd5e does not set for the roll (a damage type for ignore/downgrade rules; attack and item fields for healing); death saves are a save roll type.
+* Fixed: changing a change's key or type kept the previous value in the value list.
+* Fixed: `@item.classIdentifier` in an applied effect was not filled in for spells (and, on dnd5e 6.1, features).
+* Fixed: a macro change (`macro.itemMacro`, `macro.activityMacro`, `macro.execute`) whose value is a number or true/false (Foundry 14 stores `0` as a number) threw `change.value.startsWith is not a function` and never ran; it runs with that argument.
+* Fixed: an enchantment's rider effect applied to a creature kept dnd5e's rider mark, so its data preparation threw and it could not be deleted cleanly.
+
 ### 14.6.9
 * Changed: a module reading a bonus path dnd5e 6 moved (`bonuses.rsak.attack` and the like) gets one deprecation warning per path, not one for every place it reads it.
 
@@ -33,7 +44,7 @@
 * Fixed: an effect added to or duplicated on an item had its `##` references turned into `@` at once, so they were later filled from the caster (Legacy, Origin) instead of left for the target; `##` is now converted only on an effect being applied (to an actor, or an applied enchantment).
 * Fixed: an item change (an enchantment, e.g. `system.description.value`) turned `@UUID[...]` links into `##UUID[...]`; the links are now kept.
 * Fixed: an effect expired under *Mark Expired*/Suppress (disabled, kept) gave its macro's "off" call `expiry-reason` `effect-disabled`; the call now gets the expiry's own reason (a special duration, `duration-expired:<event>`), as a deleted effect's does.
-* Fixed: creating an effect on a creature whose token isn't drawn (another level, a scene not being viewed) logged `_preCreateActiveEffect Cannot read properties of null` and skipped preparing the effect's change values; DAE now prepares them without a drawn token.
+* Fixed: creating an effect on a creature with no canvas token (another level, a scene not being viewed) logged `_preCreateActiveEffect Cannot read properties of null` and skipped preparing the effect's change values; DAE now prepares them without a canvas token.
 * Fixed: an effect whose duration ran out with time passing outside combat reported `expiry-reason` `duration-expired:turnStart` (the Turn Start expiry dnd5e gives every finite duration); the reason is now `duration-expired:updateWorldTime`.
 
 ### 14.6.3
